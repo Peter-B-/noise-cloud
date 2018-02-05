@@ -3,6 +3,14 @@
 #include "RingBuffer.h"
 #include "AudioClassV2.h"
 
+#include "AZ3166WiFi.h"
+#include "AzureIotHub.h"
+#include "DevKitMQTTClient.h"
+
+#include "config.h"
+#include "utility.h"
+
+
 static AudioClass& Audio = AudioClass::getInstance();
 static int AUDIO_SIZE = 32000 * 3 + 45;
 
@@ -11,23 +19,53 @@ int lastButtonAState;
 int buttonAState;
 int lastButtonBState;
 int buttonBState;
+static bool hasWifi = false;
+static bool messageSending = true;
+int messageCount = 1;
+
+
+static uint64_t send_interval_ms;
 
 void setup(void)
 {
-  pinMode(LED_BUILTIN, OUTPUT);
+  Screen.init();
+  printIdleMessage();
+  Screen.print(1, "Init");
+
+  Screen.print(2, " > Serial");
   Serial.begin(115200);
+  Serial.println("Noise Cloud starting");
 
-  Serial.println("Helloworld in Azure IoT DevKits!");
+  hasWifi = false;
+  InitWifi();
+  if (!hasWifi) 
+    return;
+  
+  Screen.print(2, " > Sensors");
+  SensorInit();
 
-  // initialize the button pin as a input
+  Screen.print(2, " > IoT Hub");
+  DevKitMQTTClient_Init(true);
+
+  DevKitMQTTClient_SetSendConfirmationCallback(SendConfirmationCallback);
+  DevKitMQTTClient_SetMessageCallback(MessageCallback);
+  DevKitMQTTClient_SetDeviceTwinCallback(DeviceTwinCallback);
+  DevKitMQTTClient_SetDeviceMethodCallback(DeviceMethodCallback);
+
+  Screen.print(2, " > IO Pins");
   pinMode(USER_BUTTON_A, INPUT);
-  lastButtonAState = digitalRead(USER_BUTTON_A);
   pinMode(USER_BUTTON_B, INPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LED_WIFI, OUTPUT);
+  pinMode(LED_AZURE, OUTPUT);
+  pinMode(LED_USER, OUTPUT);
+
+  lastButtonAState = digitalRead(USER_BUTTON_A);
   lastButtonBState = digitalRead(USER_BUTTON_B);
 
-  
-
   printIdleMessage();
+
+  send_interval_ms = SystemTickCounterRead();
 
   StartRecord();
 }
@@ -41,12 +79,39 @@ void loop(void)
   {
     Serial.println("A pressed");
  
+  if (hasWifi)
+  {
+    if (messageSending && 
+        (int)(SystemTickCounterRead() - send_interval_ms) >= getInterval())
+    {
+      Serial.println("Sending data");
+      // Send teperature data
+      char messagePayload[MESSAGE_MAX_LEN];
+
+      bool temperatureAlert = readMessage(messageCount++, messagePayload);
+      EVENT_INSTANCE* message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
+      DevKitMQTTClient_Event_AddProp(message, "temperatureAlert", temperatureAlert ? "true" : "false");
+      DevKitMQTTClient_SendEventInstance(message);
+      
+      send_interval_ms = SystemTickCounterRead();
+
+    }
+    else
+    {
+      Serial.println("Check client");
+      DevKitMQTTClient_Check();
+    }
+  }
+
     //StartRecord();
   }
 
   if (buttonBState == LOW && lastButtonBState == HIGH)
   {
     Serial.println("B pressed");
+
+      Serial.println("Check client");
+      DevKitMQTTClient_Check();
  
     //StopRecord();
   }
@@ -54,13 +119,37 @@ void loop(void)
   lastButtonAState = buttonAState;
   lastButtonBState = buttonBState;
 
-  delay(20);
+
+  
+  delay(10);
+}
+
+static void InitWifi()
+{
+  Screen.print(2, " > WiFi");
+  if (WiFi.begin() == WL_CONNECTED)
+  {
+    IPAddress ip = WiFi.localIP();
+    Screen.print(3, ip.get_address());
+    Serial.print("Connected to wifi ");
+    Serial.print(WiFi.SSID());
+    Serial.print(": ");
+    Serial.println(ip.get_address());
+    
+    hasWifi = true;
+  }
+  else
+  {
+    hasWifi = false;
+    Screen.print(3, "No WiFi");
+    Serial.println("No WiFi");
+  }
 }
 
 void printIdleMessage()
 {
   Screen.clean();
-  Screen.print(0, "AZ3166 Audio  ");
+  Screen.print(0, "Noise Cloud");
 
 }
 
@@ -135,4 +224,62 @@ void PrintLoudness(float sd, float smoothed)
 
   sprintf(buf, "%7.1f", smoothed);
   Screen.print(3, buf);
+}
+
+
+static void SendConfirmationCallback(IOTHUB_CLIENT_CONFIRMATION_RESULT result)
+{
+  if (result == IOTHUB_CLIENT_CONFIRMATION_OK)
+  {
+    blinkSendConfirmation();
+  }
+}
+
+static void MessageCallback(const char* payLoad, int size)
+{
+  blinkLED();
+  Screen.print(1, payLoad, true);
+}
+
+static void DeviceTwinCallback(DEVICE_TWIN_UPDATE_STATE updateState, const unsigned char *payLoad, int size)
+{
+  char *temp = (char *)malloc(size + 1);
+  if (temp == NULL)
+  {
+    return;
+  }
+  memcpy(temp, payLoad, size);
+  temp[size] = '\0';
+  parseTwinMessage(updateState, temp);
+  free(temp);
+}
+
+static int  DeviceMethodCallback(const char *methodName, const unsigned char *payload, int size, unsigned char **response, int *response_size)
+{
+  LogInfo("Try to invoke method %s", methodName);
+  const char *responseMessage = "\"Successfully invoke device method\"";
+  int result = 200;
+
+  if (strcmp(methodName, "start") == 0)
+  {
+    LogInfo("Start sending temperature and humidity data");
+    messageSending = true;
+  }
+  else if (strcmp(methodName, "stop") == 0)
+  {
+    LogInfo("Stop sending temperature and humidity data");
+    messageSending = false;
+  }
+  else
+  {
+    LogInfo("No method %s found", methodName);
+    responseMessage = "\"No method found\"";
+    result = 404;
+  }
+
+  *response_size = strlen(responseMessage);
+  *response = (unsigned char *)malloc(*response_size);
+  strncpy((char *)(*response), responseMessage, *response_size);
+
+  return result;
 }
