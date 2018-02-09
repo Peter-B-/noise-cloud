@@ -10,8 +10,7 @@
 #include "config.h"
 #include "utility.h"
 
-
-static AudioClass& Audio = AudioClass::getInstance();
+static AudioClass &Audio = AudioClass::getInstance();
 static int AUDIO_SIZE = 32000 * 3 + 45;
 
 char readBuffer[AUDIO_CHUNK_SIZE];
@@ -23,6 +22,8 @@ static bool hasWifi = false;
 static bool messageSending = true;
 int messageCount = 1;
 
+uint16_t noiseBuffer[NOISEBUFFER_SIZE];
+uint16_t noiseBufferSend[NOISEBUFFER_SIZE];
 
 static uint64_t send_interval_ms;
 
@@ -38,9 +39,9 @@ void setup(void)
 
   hasWifi = false;
   InitWifi();
-  if (!hasWifi) 
+  if (!hasWifi)
     return;
-  
+
   Screen.print(2, " > Sensors");
   SensorInit();
 
@@ -67,6 +68,9 @@ void setup(void)
 
   send_interval_ms = SystemTickCounterRead();
 
+  memset(noiseBuffer, 0x0, sizeof(noiseBuffer));
+  memset(noiseBufferSend, 0x0, sizeof(noiseBufferSend));
+
   StartRecord();
 }
 
@@ -74,53 +78,48 @@ void loop(void)
 {
   buttonAState = digitalRead(USER_BUTTON_A);
   buttonBState = digitalRead(USER_BUTTON_B);
-    
+
   if (buttonAState == LOW && lastButtonAState == HIGH)
   {
     Serial.println("A pressed");
- 
-  if (hasWifi)
-  {
-    if (messageSending && 
-        (int)(SystemTickCounterRead() - send_interval_ms) >= getInterval())
+
+    if (hasWifi)
     {
-      Serial.println("Sending data");
-      // Send teperature data
-      char messagePayload[MESSAGE_MAX_LEN];
+      if (messageSending &&
+          (int)(SystemTickCounterRead() - send_interval_ms) >= getInterval())
+      {
+        Serial.println("Sending data");
+        // Send teperature data
+        char messagePayload[MESSAGE_MAX_LEN];
 
-      bool temperatureAlert = readMessage(messageCount++, messagePayload);
-      EVENT_INSTANCE* message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
-      DevKitMQTTClient_Event_AddProp(message, "temperatureAlert", temperatureAlert ? "true" : "false");
-      DevKitMQTTClient_SendEventInstance(message);
-      
-      send_interval_ms = SystemTickCounterRead();
+        memcpy(noiseBufferSend, noiseBuffer, sizeof(noiseBuffer));
+        memset(noiseBuffer, 0x0, sizeof(noiseBuffer));
 
+        readMessage(messageCount++, messagePayload, noiseBufferSend, NOISEBUFFER_SIZE);
+        EVENT_INSTANCE *message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
+        DevKitMQTTClient_SendEventInstance(message);
+
+        send_interval_ms = SystemTickCounterRead();
+      }
+      else
+      {
+        Serial.println("Check client");
+        DevKitMQTTClient_Check();
+      }
     }
-    else
-    {
-      Serial.println("Check client");
-      DevKitMQTTClient_Check();
-    }
-  }
-
-    //StartRecord();
   }
 
   if (buttonBState == LOW && lastButtonBState == HIGH)
   {
     Serial.println("B pressed");
 
-      Serial.println("Check client");
-      DevKitMQTTClient_Check();
- 
-    //StopRecord();
+    Serial.println("Check client");
+    DevKitMQTTClient_Check();
   }
 
   lastButtonAState = buttonAState;
   lastButtonBState = buttonBState;
 
-
-  
   delay(10);
 }
 
@@ -135,7 +134,7 @@ static void InitWifi()
     Serial.print(WiFi.SSID());
     Serial.print(": ");
     Serial.println(ip.get_address());
-    
+
     hasWifi = true;
   }
   else
@@ -150,7 +149,6 @@ void printIdleMessage()
 {
   Screen.clean();
   Screen.print(0, "Noise Cloud");
-
 }
 
 bool firstRecord;
@@ -163,10 +161,10 @@ void StartRecord()
   Audio.startRecord(recordCallback);
 }
 
-
 void recordCallback(void)
 {
-  if (firstRecord){
+  if (firstRecord)
+  {
     firstRecord = false;
     return;
   }
@@ -182,9 +180,9 @@ int block = 0;
 
 void CalcLoudness(int length)
 {
-  for(int i = 0; i < length; i=i+2)
+  for (int i = 0; i < length; i = i + 2)
   {
-    short value =   (short)readBuffer[i] | (short)readBuffer[i+1] << 8;
+    short value = (short)readBuffer[i] | (short)readBuffer[i + 1] << 8;
     float tmpM = M;
     M += (value - tmpM) / k;
     S += (value - tmpM) * (value - M);
@@ -194,7 +192,7 @@ void CalcLoudness(int length)
   block++;
   if (block == 16)
   {
-    float sd = log10(sqrt(S / (k-2)));
+    float sd = log10(sqrt(S / (k - 2)));
     float smoothed = Smooth(sd);
 
     PrintLoudness(sd, smoothed);
@@ -203,6 +201,10 @@ void CalcLoudness(int length)
     S = 0.0;
     k = 1;
     block = 0;
+
+    int idx = (int)(sd * 10);
+    idx = min(max(idx, 0), NOISEBUFFER_SIZE);
+    noiseBuffer[idx]++;
   }
 }
 
@@ -211,10 +213,9 @@ float smoothValue = 0;
 
 float Smooth(float value)
 {
-  smoothValue = (smoothAlpha * value) + ((1-smoothAlpha) * smoothValue);
+  smoothValue = (smoothAlpha * value) + ((1 - smoothAlpha) * smoothValue);
   return smoothValue;
 }
-
 
 void PrintLoudness(float sd, float smoothed)
 {
@@ -226,7 +227,6 @@ void PrintLoudness(float sd, float smoothed)
   Screen.print(3, buf);
 }
 
-
 static void SendConfirmationCallback(IOTHUB_CLIENT_CONFIRMATION_RESULT result)
 {
   if (result == IOTHUB_CLIENT_CONFIRMATION_OK)
@@ -235,7 +235,7 @@ static void SendConfirmationCallback(IOTHUB_CLIENT_CONFIRMATION_RESULT result)
   }
 }
 
-static void MessageCallback(const char* payLoad, int size)
+static void MessageCallback(const char *payLoad, int size)
 {
   blinkLED();
   Screen.print(1, payLoad, true);
@@ -254,7 +254,7 @@ static void DeviceTwinCallback(DEVICE_TWIN_UPDATE_STATE updateState, const unsig
   free(temp);
 }
 
-static int  DeviceMethodCallback(const char *methodName, const unsigned char *payload, int size, unsigned char **response, int *response_size)
+static int DeviceMethodCallback(const char *methodName, const unsigned char *payload, int size, unsigned char **response, int *response_size)
 {
   LogInfo("Try to invoke method %s", methodName);
   const char *responseMessage = "\"Successfully invoke device method\"";
