@@ -100,7 +100,8 @@ float readHumidity()
     return humidity;
 }
 
-void readMessage(int messageId, char *payload, uint16_t* noiseData, int noiseDataSize)
+int messageId = 1;
+void serializeMessage(char *payload, uint16_t *noiseData, int noiseDataSize, float temperature, float humidity)
 {
     JSON_Value *root_value = json_value_init_object();
     JSON_Object *root_object = json_value_get_object(root_value);
@@ -108,9 +109,6 @@ void readMessage(int messageId, char *payload, uint16_t* noiseData, int noiseDat
 
     json_object_set_string(root_object, "deviceId", DEVICE_ID);
     json_object_set_number(root_object, "messageId", messageId);
-
-    float temperature = readTemperature();
-    float humidity = readHumidity();
 
     if(temperature != temperature)
         json_object_set_null(root_object, "temperature");
@@ -137,11 +135,11 @@ void readMessage(int messageId, char *payload, uint16_t* noiseData, int noiseDat
         }
     }
 
-
     serialized_string = json_serialize_to_string_pretty(root_value);
 
     snprintf(payload, MESSAGE_MAX_LEN, "%s", serialized_string);
     json_free_serialized_string(serialized_string);
     json_value_free(root_value);
     
+    messageId++;
 }

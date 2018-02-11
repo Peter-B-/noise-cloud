@@ -20,12 +20,13 @@ int lastButtonBState;
 int buttonBState;
 static bool hasWifi = false;
 static bool messageSending = true;
-int messageCount = 1;
+
 
 uint16_t noiseBuffer[NOISEBUFFER_SIZE];
 uint16_t noiseBufferSend[NOISEBUFFER_SIZE];
 
-static uint64_t send_interval_ms;
+static uint64_t lastSendTime;
+static uint64_t displayValuesTime;
 
 void setup(void)
 {
@@ -66,7 +67,8 @@ void setup(void)
 
   printIdleMessage();
 
-  send_interval_ms = SystemTickCounterRead();
+  lastSendTime = SystemTickCounterRead();
+  displayValuesTime = SystemTickCounterRead();
 
   memset(noiseBuffer, 0x0, sizeof(noiseBuffer));
   memset(noiseBufferSend, 0x0, sizeof(noiseBufferSend));
@@ -83,44 +85,51 @@ void loop(void)
   {
     Serial.println("A pressed");
 
-    if (hasWifi)
-    {
-      if (messageSending &&
-          (int)(SystemTickCounterRead() - send_interval_ms) >= getInterval())
-      {
-        Serial.println("Sending data");
-        // Send teperature data
-        char messagePayload[MESSAGE_MAX_LEN];
-
-        memcpy(noiseBufferSend, noiseBuffer, sizeof(noiseBuffer));
-        memset(noiseBuffer, 0x0, sizeof(noiseBuffer));
-
-        readMessage(messageCount++, messagePayload, noiseBufferSend, NOISEBUFFER_SIZE);
-        EVENT_INSTANCE *message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
-        DevKitMQTTClient_SendEventInstance(message);
-
-        send_interval_ms = SystemTickCounterRead();
-      }
-      else
-      {
-        Serial.println("Check client");
-        DevKitMQTTClient_Check();
-      }
-    }
   }
 
   if (buttonBState == LOW && lastButtonBState == HIGH)
   {
     Serial.println("B pressed");
-
-    Serial.println("Check client");
-    DevKitMQTTClient_Check();
+    displayValuesTime = SystemTickCounterRead();
   }
 
   lastButtonAState = buttonAState;
   lastButtonBState = buttonBState;
 
+  if (hasWifi)
+  {
+    if (messageSending &&
+        (int)(SystemTickCounterRead() - lastSendTime) >= getInterval())
+    {
+      SendDataToCloud();
+    }
+
+    Serial.println("Check client");
+    DevKitMQTTClient_Check();
+  }
+
+
+
   delay(10);
+}
+
+void SendDataToCloud()
+{
+  memcpy(noiseBufferSend, noiseBuffer, sizeof(noiseBuffer));
+  memset(noiseBuffer, 0x0, sizeof(noiseBuffer));
+
+  float temperature = readTemperature();
+  float humidity = readHumidity();
+
+      Serial.println("Sending data");
+      char messagePayload[MESSAGE_MAX_LEN];
+
+      serializeMessage(messagePayload, noiseBufferSend, NOISEBUFFER_SIZE, temperature, humidity);
+      EVENT_INSTANCE *message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
+      DevKitMQTTClient_SendEventInstance(message);
+
+      lastSendTime = SystemTickCounterRead();
+
 }
 
 static void InitWifi()
@@ -208,7 +217,7 @@ void CalcLoudness(int length)
   }
 }
 
-float smoothAlpha = 0.1;
+float smoothAlpha = 0.05;
 float smoothValue = 0;
 
 float Smooth(float value)
