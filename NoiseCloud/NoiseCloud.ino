@@ -20,7 +20,7 @@ int lastButtonBState;
 int buttonBState;
 static bool hasWifi = false;
 static bool messageSending = true;
-
+static bool showValues = true;
 
 uint16_t noiseBuffer[NOISEBUFFER_SIZE];
 uint16_t noiseBufferSend[NOISEBUFFER_SIZE];
@@ -28,10 +28,14 @@ uint16_t noiseBufferSend[NOISEBUFFER_SIZE];
 static uint64_t lastSendTime;
 static uint64_t displayValuesTime;
 
+float noiseRms = 0.0;
+float noiseLog = 0.0;
+float noiseSmoothed = 0.0;
+
 void setup(void)
 {
   Screen.init();
-  printIdleMessage();
+  PrintTitle();
   Screen.print(1, "Init");
 
   Screen.print(2, " > Serial");
@@ -65,8 +69,6 @@ void setup(void)
   lastButtonAState = digitalRead(USER_BUTTON_A);
   lastButtonBState = digitalRead(USER_BUTTON_B);
 
-  printIdleMessage();
-
   lastSendTime = SystemTickCounterRead();
   displayValuesTime = SystemTickCounterRead();
 
@@ -76,25 +78,40 @@ void setup(void)
   StartRecord();
 }
 
+uint loopCount = 0;
 void loop(void)
 {
+  loopCount++;
   buttonAState = digitalRead(USER_BUTTON_A);
   buttonBState = digitalRead(USER_BUTTON_B);
 
   if (buttonAState == LOW && lastButtonAState == HIGH)
   {
     Serial.println("A pressed");
-
+    displayValuesTime = SystemTickCounterRead();
+    PrintTitle();
+    showValues = true;
   }
 
   if (buttonBState == LOW && lastButtonBState == HIGH)
   {
     Serial.println("B pressed");
-    displayValuesTime = SystemTickCounterRead();
   }
 
   lastButtonAState = buttonAState;
   lastButtonBState = buttonBState;
+
+  if (showValues)
+    if ((int)(SystemTickCounterRead() - displayValuesTime) >= 30000)
+    {
+      showValues = false;
+      delay(10);
+      Screen.clean();
+    }
+    else
+    {
+      PrintNoiseData(loopCount % 20);
+    }
 
   if (hasWifi)
   {
@@ -104,11 +121,8 @@ void loop(void)
       SendDataToCloud();
     }
 
-    Serial.println("Check client");
     DevKitMQTTClient_Check();
   }
-
-
 
   delay(10);
 }
@@ -121,15 +135,14 @@ void SendDataToCloud()
   float temperature = readTemperature();
   float humidity = readHumidity();
 
-      Serial.println("Sending data");
-      char messagePayload[MESSAGE_MAX_LEN];
+  Serial.println("Sending data");
+  char messagePayload[MESSAGE_MAX_LEN];
 
-      serializeMessage(messagePayload, noiseBufferSend, NOISEBUFFER_SIZE, temperature, humidity);
-      EVENT_INSTANCE *message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
-      DevKitMQTTClient_SendEventInstance(message);
+  serializeMessage(messagePayload, noiseBufferSend, NOISEBUFFER_SIZE, temperature, humidity);
+  EVENT_INSTANCE *message = DevKitMQTTClient_Event_Generate(messagePayload, MESSAGE);
+  DevKitMQTTClient_SendEventInstance(message);
 
-      lastSendTime = SystemTickCounterRead();
-
+  lastSendTime = SystemTickCounterRead();
 }
 
 static void InitWifi()
@@ -154,16 +167,15 @@ static void InitWifi()
   }
 }
 
-void printIdleMessage()
+void PrintTitle()
 {
   Screen.clean();
-  Screen.print(0, "Noise Cloud");
+  Screen.print(0, "  Noise Cloud");
 }
 
 bool firstRecord;
 void StartRecord()
 {
-  delay(500);
   Serial.println("start recording");
   firstRecord = true;
   Audio.format(8000, 16);
@@ -182,8 +194,7 @@ void recordCallback(void)
   CalcLoudness(length);
 }
 
-float M = 0.0;
-float S = 0.0;
+float squareSum = 0.0;
 int k = 1;
 int block = 0;
 
@@ -192,48 +203,47 @@ void CalcLoudness(int length)
   for (int i = 0; i < length; i = i + 2)
   {
     short value = (short)readBuffer[i] | (short)readBuffer[i + 1] << 8;
-    float tmpM = M;
-    M += (value - tmpM) / k;
-    S += (value - tmpM) * (value - M);
+
+    squareSum += value * value;
     k++;
   }
 
   block++;
   if (block == 16)
   {
-    float sd = log10(sqrt(S / (k - 2)));
-    float smoothed = Smooth(sd);
+    noiseRms = sqrt(squareSum / k);
+    noiseLog = log10(noiseRms);
+    UpdateSmoothed(noiseLog);
 
-    PrintLoudness(sd, smoothed);
-
-    M = 0.0;
-    S = 0.0;
+    squareSum = 0;
     k = 1;
     block = 0;
 
-    int idx = (int)(sd * 10);
+    int idx = (int)(noiseLog * 10);
     idx = min(max(idx, 0), NOISEBUFFER_SIZE);
     noiseBuffer[idx]++;
   }
 }
 
-float smoothAlpha = 0.05;
-float smoothValue = 0;
-
-float Smooth(float value)
+void UpdateSmoothed(float value)
 {
-  smoothValue = (smoothAlpha * value) + ((1 - smoothAlpha) * smoothValue);
-  return smoothValue;
+  float smoothAlpha = 0.1;
+  noiseSmoothed = (smoothAlpha * value) + ((1 - smoothAlpha) * noiseSmoothed);
 }
 
-void PrintLoudness(float sd, float smoothed)
+char buf[100];
+void PrintNoiseData(int i)
 {
-  char buf[100];
-  sprintf(buf, "%7.1f", sd);
-  Screen.print(2, buf);
-
-  sprintf(buf, "%7.1f", smoothed);
-  Screen.print(3, buf);
+  if (i == 0)
+  {
+    sprintf(buf, "%7.1f", noiseLog);
+    Screen.print(2, buf);
+  }
+  if (i == 1)
+  {
+    sprintf(buf, "%7.1f", noiseSmoothed);
+    Screen.print(3, buf);
+  }
 }
 
 static void SendConfirmationCallback(IOTHUB_CLIENT_CONFIRMATION_RESULT result)

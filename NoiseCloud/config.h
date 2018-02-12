@@ -6,6 +6,4 @@
 
 #define MESSAGE_MAX_LEN 2048
 
-#define DEVICE_ID "AZ3166"
-
 #define NOISEBUFFER_SIZE 40

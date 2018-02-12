@@ -107,17 +107,10 @@ void serializeMessage(char *payload, uint16_t *noiseData, int noiseDataSize, flo
     JSON_Object *root_object = json_value_get_object(root_value);
     char *serialized_string = NULL;
 
-    json_object_set_string(root_object, "deviceId", DEVICE_ID);
-    json_object_set_number(root_object, "messageId", messageId);
-
-    if(temperature != temperature)
-        json_object_set_null(root_object, "temperature");
-    else
+    if(temperature == temperature)
         json_object_set_number(root_object, "temperature", temperature);
 
-    if(humidity != humidity)
-        json_object_set_null(root_object, "humidity");
-    else
+    if(humidity == humidity)
         json_object_set_number(root_object, "humidity", humidity);
 
 	json_object_set_value(root_object, "noise", json_value_init_array());
